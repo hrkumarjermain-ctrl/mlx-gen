@@ -10,8 +10,10 @@ use super::encoder::{Encoder, VaeEncoderConfig};
 use super::mid_block::UNetMidBlock;
 use super::up_decoder_block::UpDecoderBlock;
 use mlx_gen::nn::silu;
+use mlx_gen::tiling::{TilingConfig, VaeTiling};
+use mlx_gen::vae_tiling::tiled_decode;
 use mlx_gen::weights::Weights;
-use mlx_gen::{Error, LatentDecoder, Result};
+use mlx_gen::{CancelFlag, Error, LatentDecoder, Result};
 
 /// Per-up-block `(num_resnet_layers, add_upsample)`.
 #[derive(Debug, Clone)]
@@ -34,6 +36,8 @@ pub struct Decoder {
     up_blocks: Vec<UpDecoderBlock>,
     conv_norm_out: ConvNormOut,
     conv_out: ConvLayer,
+    /// Output pixels per latent pixel: 2 per upsampling up-block (×8 for the production decoder).
+    spatial_scale: i32,
 }
 
 impl Decoder {
@@ -60,7 +64,13 @@ impl Decoder {
             up_blocks,
             conv_norm_out: ConvNormOut::from_weights(w, &p("conv_norm_out"))?,
             conv_out: ConvLayer::from_weights(w, &p("conv_out"))?,
+            spatial_scale: 1 << cfg.up_blocks.iter().filter(|(_, up)| *up).count(),
         })
+    }
+
+    /// Output pixels per latent pixel (2 per upsampling up-block).
+    pub fn spatial_scale(&self) -> i32 {
+        self.spatial_scale
     }
 
     /// Quantize the decoder's only quantizable Linears — the mid-block attention (conv_in/out,
@@ -71,8 +81,20 @@ impl Decoder {
 
     /// `latents` NCHW → image NCHW (3 channels, spatial ×8).
     pub fn forward(&self, latents: &Array) -> Result<Array> {
-        let mut h = self.conv_in.forward(latents)?;
-        h = self.mid_block.forward(&h)?;
+        self.forward_tail(&self.forward_head(latents)?)
+    }
+
+    /// conv_in → mid-block (incl. its global spatial attention), at latent resolution. The tiled
+    /// decode runs this ONCE on the full latent so the attention sees the whole image.
+    pub fn forward_head(&self, latents: &Array) -> Result<Array> {
+        let h = self.conv_in.forward(latents)?;
+        self.mid_block.forward(&h)
+    }
+
+    /// up-blocks → GroupNorm-out → SiLU → conv_out: the ×8 upsampling tail, where a full-resolution
+    /// decode spikes — the part [`Vae::decode_tiled`] tiles.
+    pub fn forward_tail(&self, head: &Array) -> Result<Array> {
+        let mut h = head.clone();
         for up in &self.up_blocks {
             h = up.forward(&h)?;
         }
@@ -189,8 +211,18 @@ impl Vae {
         )?)
     }
 
-    /// `latents`: `(B, C, F, H, W)` (F squeezed) or `(B, C, H, W)` → image `(B, 3, 1, H·8, W·8)`.
-    pub fn decode(&self, latents: &Array) -> Result<Array> {
+    /// The tiling geometry of this still-image VAE: the decoder's spatial scale (×8 in production),
+    /// singleton frame axis.
+    pub fn tiling(&self) -> VaeTiling {
+        VaeTiling {
+            spatial_scale: self.decoder.spatial_scale(),
+            temporal_scale: 1,
+            causal_temporal: false,
+        }
+    }
+
+    /// `(B, C, 1, H, W)` or `(B, C, H, W)` latents → de-normalized `(B, C, H, W)` decoder input.
+    fn denormalize(&self, latents: &Array) -> Result<Array> {
         let sh = latents.shape();
         let latents4 = if sh.len() == 5 {
             // squeeze the (size-1) frame axis: (B,C,1,H,W) -> (B,C,H,W)
@@ -198,16 +230,55 @@ impl Vae {
         } else {
             latents.clone()
         };
-        let scaled = add(
+        Ok(add(
             &multiply(
                 &latents4,
                 Array::from_slice(&[1.0 / self.scaling_factor], &[1]),
             )?,
             Array::from_slice(&[self.shift_factor], &[1]),
-        )?;
-        let decoded = self.decoder.forward(&scaled)?;
+        )?)
+    }
+
+    /// `latents`: `(B, C, F, H, W)` (F squeezed) or `(B, C, H, W)` → image `(B, 3, 1, H·8, W·8)`.
+    pub fn decode(&self, latents: &Array) -> Result<Array> {
+        let decoded = self.decoder.forward(&self.denormalize(latents)?)?;
         let d = decoded.shape();
         Ok(decoded.reshape(&[d[0], d[1], 1, d[2], d[3]])?) // restore frame axis
+    }
+
+    /// Memory-bounded decode: the head (conv_in → mid-block attention) runs once on the full latent,
+    /// then the ×8 upsampling tail is decoded in overlapping tiles and trapezoidally blended
+    /// ([`tiled_decode`]), so the peak is one tile's tail instead of the full-resolution one. Falls
+    /// back to [`Self::decode`] when `cfg` doesn't tile this size. Same output shape as `decode`.
+    ///
+    /// Unlike the Qwen-Image VAE (per-pixel RMS norms), this decoder's up-blocks use **GroupNorm**,
+    /// whose statistics span the tile — so a tiled decode is close to, not identical with, the
+    /// single-pass one (the classic diffusers tiled-VAE trade-off, hidden by the overlap blend).
+    pub fn decode_tiled(
+        &self,
+        latents: &Array,
+        cfg: &TilingConfig,
+        cancel: Option<&CancelFlag>,
+    ) -> Result<Array> {
+        let head = self.decoder.forward_head(&self.denormalize(latents)?)?; // [B, C, h, w]
+        let s = head.shape();
+        let (h, w) = (s[2], s[3]);
+        if !cfg.needs_tiling(self.tiling(), 1, h, w) {
+            let out = self.decoder.forward_tail(&head)?;
+            let o = out.shape();
+            return Ok(out.reshape(&[o[0], o[1], 1, o[2], o[3]])?);
+        }
+        let head5 = head.reshape(&[s[0], s[1], 1, h, w])?;
+        let plan = cfg.plan(self.tiling(), 1, h, w);
+        // NCTHW: channel axis 1, tiled axes [2, 3, 4] (T is the singleton).
+        tiled_decode(&head5, &plan, [2, 3, 4], cancel, |tile| {
+            let t = tile.shape();
+            let out = self
+                .decoder
+                .forward_tail(&tile.reshape(&[t[0], t[1], t[3], t[4]])?)?;
+            let o = out.shape();
+            Ok(out.reshape(&[o[0], o[1], 1, o[2], o[3]])?)
+        })
     }
 
     pub fn decoder(&self) -> &Decoder {

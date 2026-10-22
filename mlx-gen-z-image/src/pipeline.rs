@@ -10,6 +10,7 @@ use mlx_gen::array::host_i32;
 // The img2img leaves (start-step / init-image preprocess / noise-interp blend) are shared in core;
 // re-export so the crate's public surface (`mlx_gen_z_image::…`) and internal callers are unchanged.
 pub use mlx_gen::img2img::{add_noise_by_interpolation, init_time_step, preprocess_init_image};
+use mlx_gen::tiling::{budgeted_plan, TileCandidates, TilingConfig};
 use mlx_gen::tokenizer::{TextTokenizer, TokenizerOutput};
 use mlx_gen::{
     run_flow_sampler, CancelFlag, Conditioning, Error, FlowMatchEuler, GenerationRequest, Image,
@@ -532,11 +533,51 @@ pub(crate) fn render_batch(
         // `Vae::decode` was a no-op view. PiD requires 4-D. `pid_decoder` is `Some` only when the
         // request set `use_pid` and a PiD overlay was loaded (epic 7840, sc-7846); else the native VAE.
         let unpacked = unpack_latents(&latents)?;
-        let decoder: &dyn LatentDecoder = pid_decoder.unwrap_or(vae);
-        let decoded = decoder.decode(&unpacked)?.as_dtype(Dtype::Float32)?;
+        // The native VAE's single-pass ×8 decode is the render's peak (measured 2026-10-22 on a 16 GB
+        // M1 Pro at 1024²: 4.9 GB through denoise, 17.4 GB in the decode). When it wouldn't fit the
+        // safe budget, tile the upsampling tail instead; PiD keeps its own decode.
+        let decoded = match (pid_decoder, decode_tiling(req.width, req.height)?) {
+            (None, Some(cfg)) => vae.decode_tiled(&unpacked, &cfg, Some(&req.cancel))?,
+            (pid, _) => pid.unwrap_or(vae).decode(&unpacked)?,
+        }
+        .as_dtype(Dtype::Float32)?;
         images.push(decoded_to_image(&decoded)?);
     }
     Ok(images)
+}
+
+/// Bytes per **output** pixel of a single-pass native-VAE decode's spike above what is already resident
+/// (2026-10-22, z_image_turbo Q4, 1024²: 17.4 − 4.9 GB over 1024², rounded up).
+const DECODE_SPIKE_BYTES_PER_PIXEL: f64 = 12_800.0;
+/// Bytes per output pixel the tiled decode keeps for the whole image (the f32 output + blend weights).
+const DECODE_ACCUM_BYTES_PER_PIXEL: f64 = 64.0;
+const GIB: f64 = (1u64 << 30) as f64;
+
+/// The decode-tiling gate: `None` when a single-pass decode fits [`mlx_gen::memory::safe_budget_gib`]
+/// on top of what MLX already holds (so a big Mac keeps the untiled, reference-parity decode),
+/// otherwise the largest tile that fits ([`budgeted_plan`]). What is resident is read at decode time,
+/// so quant tier, offload policy and LoRAs are accounted for without a model-size table.
+fn decode_tiling(width: u32, height: u32) -> Result<Option<TilingConfig>> {
+    let resident = mlx_rs::memory::get_active_memory() as f64 / GIB;
+    let peak_cost = move |_of: i64, oh: i64, ow: i64, _tf: i64, th: i64, tw: i64| {
+        resident
+            + DECODE_ACCUM_BYTES_PER_PIXEL * (oh * ow) as f64 / GIB
+            + DECODE_SPIKE_BYTES_PER_PIXEL * (th * tw) as f64 / GIB
+    };
+    let candidates = TileCandidates {
+        spatial_px: &[768, 512, 384, 256],
+        spatial_overlap_px: 64,
+        temporal: &[], // still image
+    };
+    budgeted_plan(
+        height as i32,
+        width as i32,
+        1,
+        mlx_gen::memory::safe_budget_gib(),
+        candidates,
+        peak_cost,
+    )
+    .map_err(|e| Error::Msg(format!("z_image decode: {e}")))
 }
 
 /// Render one preview sample (sc-5637) from the **in-progress training adapter** already installed
