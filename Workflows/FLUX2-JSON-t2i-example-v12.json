@@ -1,0 +1,785 @@
+{
+  "id": "42ca38e5-edbf-48ba-a4ea-7d223c1d8c5f",
+  "revision": 0,
+  "last_node_id": 130,
+  "last_link_id": 251,
+  "nodes": [
+    {
+      "id": 73,
+      "type": "ProjectFilePathNode",
+      "pos": [
+        5480,
+        28150
+      ],
+      "size": [
+        270,
+        160
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "project_name",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "link": 134
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            104
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ProjectFilePathNode",
+        "cnr_id": "djz-nodes",
+        "ver": "58baa825b8eb2055b9841665cb662bad9689700c"
+      },
+      "widgets_values": [
+        "Flux2",
+        "tests",
+        "flux2json",
+        "id6",
+        "auto"
+      ],
+      "widgets_values_named": {
+        "root": "Flux2",
+        "project_name": "tests",
+        "subfolder": "flux2json",
+        "filename": "id6",
+        "separator": "auto"
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 98,
+      "type": "Flux2ProImageNode",
+      "pos": [
+        5480,
+        27820
+      ],
+      "size": [
+        270,
+        270
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 250
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            166
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Flux2ProImageNode",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.74"
+      },
+      "widgets_values": [
+        "",
+        1024,
+        768,
+        11535506943324,
+        "randomize",
+        false
+      ],
+      "widgets_values_named": {
+        "prompt": "",
+        "width": 1024,
+        "height": 768,
+        "seed": 11535506943324,
+        "control_after_generate": "randomize",
+        "prompt_upsampling": false
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 96,
+      "type": "PrimitiveNode",
+      "pos": [
+        4310,
+        27840
+      ],
+      "size": [
+        400,
+        120
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "widget": {
+            "name": "project_name"
+          },
+          "links": [
+            134
+          ]
+        }
+      ],
+      "title": "Project Name",
+      "properties": {
+        "Run widget replace on values": false
+      },
+      "widgets_values": [
+        "tests"
+      ],
+      "widgets_values_named": {
+        "value": "tests"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 68,
+      "type": "ShowText|pysssss",
+      "pos": [
+        4850,
+        27840
+      ],
+      "size": [
+        590,
+        640
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 249
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            250
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ShowText|pysssss",
+        "cnr_id": "comfyui-custom-scripts",
+        "ver": "aac13aa7ce35b07d43633c3bbe654a38c00d74f5"
+      },
+      "widgets_values": [
+        "{\n  \"scene\": \"Minimal product photography setup with clean surface\",\n  \"subjects\": [\n    {\n      \"description\": \"Minimalist ceramic coffee mug\",\n      \"position\": \"center foreground\",\n      \"color_palette\": [\n        \"#F59E0B\"\n      ]\n    }\n  ],\n  \"style\": \"Ultra-realistic product photography with commercial quality\",\n  \"camera\": {\n    \"angle\": \"Slight overhead angle, 30 degrees\",\n    \"distance\": \"Medium shot\",\n    \"lens-mm\": 200,\n    \"f-number\": \"f/5.6\",\n    \"depth_of_field\": \"Moderate depth, product sharp\",\n    \"focus\": \"Sharp focus on product details\"\n  }\n}"
+      ],
+      "widgets_values_named": {
+        "text_0": "{\n  \"scene\": \"Minimal product photography setup with clean surface\",\n  \"subjects\": [\n    {\n      \"description\": \"Minimalist ceramic coffee mug\",\n      \"position\": \"center foreground\",\n      \"color_palette\": [\n        \"#F59E0B\"\n      ]\n    }\n  ],\n  \"style\": \"Ultra-realistic product photography with commercial quality\",\n  \"camera\": {\n    \"angle\": \"Slight overhead angle, 30 degrees\",\n    \"distance\": \"Medium shot\",\n    \"lens-mm\": 200,\n    \"f-number\": \"f/5.6\",\n    \"depth_of_field\": \"Moderate depth, product sharp\",\n    \"focus\": \"Sharp focus on product details\"\n  }\n}"
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 71,
+      "type": "SaveImage",
+      "pos": [
+        5810,
+        27820
+      ],
+      "size": [
+        970,
+        570
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 166
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": 104
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SaveImage",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.70"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "ComfyUI"
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 127,
+      "type": "FLUX2_StyleSelector",
+      "pos": [
+        3500,
+        27800
+      ],
+      "size": [
+        400,
+        220
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "style",
+          "type": "STRING",
+          "links": [
+            245
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_StyleSelector"
+      },
+      "widgets_values": [
+        "Photorealistic",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "style_category": "Photorealistic",
+        "style_preset": "",
+        "custom_style": "",
+        "quality_level": "",
+        "additional_modifiers": ""
+      }
+    },
+    {
+      "id": 129,
+      "type": "FLUX2_SubjectArray",
+      "pos": [
+        3230,
+        28040
+      ],
+      "size": [
+        200,
+        250
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "subject_1",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": 243
+        },
+        {
+          "name": "subject_2",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_3",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_4",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_5",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_6",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_7",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_8",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_9",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_10",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_11",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        },
+        {
+          "name": "subject_12",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "subjects",
+          "type": "FLUX2_SUBJECT_ARRAY",
+          "links": [
+            244
+          ]
+        },
+        {
+          "name": "subject_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_SubjectArray"
+      }
+    },
+    {
+      "id": 125,
+      "type": "FLUX2_PromptAssembler",
+      "pos": [
+        4310,
+        28040
+      ],
+      "size": [
+        400,
+        390
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "subjects",
+          "shape": 7,
+          "type": "FLUX2_SUBJECT_ARRAY",
+          "link": 244
+        },
+        {
+          "name": "color_palette",
+          "shape": 7,
+          "type": "FLUX2_COLOR_ARRAY",
+          "link": null
+        },
+        {
+          "name": "camera",
+          "shape": 7,
+          "type": "FLUX2_CAMERA",
+          "link": 242
+        },
+        {
+          "name": "scene",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "scene"
+          },
+          "link": 251
+        },
+        {
+          "name": "style",
+          "shape": 7,
+          "type": "STRING",
+          "widget": {
+            "name": "style"
+          },
+          "link": 245
+        }
+      ],
+      "outputs": [
+        {
+          "name": "json_string",
+          "type": "STRING",
+          "links": [
+            249
+          ]
+        },
+        {
+          "name": "json_object",
+          "type": "FLUX2_JSON",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_PromptAssembler"
+      },
+      "widgets_values": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        true,
+        true
+      ],
+      "widgets_values_named": {
+        "scene": "",
+        "style": "",
+        "lighting": "",
+        "mood": "",
+        "background": "",
+        "composition": "",
+        "pretty_print": true,
+        "remove_empty": true
+      }
+    },
+    {
+      "id": 126,
+      "type": "FLUX2_SceneBuilder",
+      "pos": [
+        3510,
+        28110
+      ],
+      "size": [
+        400,
+        270
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "scene",
+          "type": "STRING",
+          "links": [
+            251
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_SceneBuilder"
+      },
+      "widgets_values": [
+        "Product Stage",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "scene_type": "Product Stage",
+        "custom_description": "",
+        "environment_details": "",
+        "time_of_day": "",
+        "custom_time_of_day": "",
+        "weather": "",
+        "custom_weather": ""
+      }
+    },
+    {
+      "id": 130,
+      "type": "FLUX2_CameraRig",
+      "pos": [
+        3990,
+        28080
+      ],
+      "size": [
+        270,
+        370
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "camera",
+          "type": "FLUX2_CAMERA",
+          "links": [
+            242
+          ]
+        },
+        {
+          "name": "camera_summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_CameraRig"
+      },
+      "widgets_values": [
+        "Product Photography",
+        "",
+        "",
+        "",
+        200,
+        "",
+        "",
+        0,
+        "",
+        "",
+        "",
+        false,
+        false
+      ],
+      "widgets_values_named": {
+        "preset": "Product Photography",
+        "angle": "",
+        "angle_preset": "",
+        "distance": "",
+        "custom_distance": 200,
+        "lens_mm": "",
+        "lens_description": "",
+        "f_number": 0,
+        "iso": "",
+        "depth_of_field": "",
+        "depth_preset": "",
+        "focus": false,
+        "override_preset": false
+      }
+    },
+    {
+      "id": 128,
+      "type": "FLUX2_SubjectCreator",
+      "pos": [
+        2780,
+        27800
+      ],
+      "size": [
+        400,
+        330
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "subject",
+          "type": "FLUX2_SUBJECT",
+          "links": [
+            243
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "FLUX2_SubjectCreator"
+      },
+      "widgets_values": [
+        "Godzilla, king of the monsters, ",
+        "center foreground",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "#F59E0B",
+        "",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "description": "Godzilla, king of the monsters, ",
+        "position": "center foreground",
+        "position_horizontal": "",
+        "position_vertical": "",
+        "position_depth": "",
+        "action": "",
+        "pose": "",
+        "color_1": "#F59E0B",
+        "color_2": "",
+        "color_3": "",
+        "color_4": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      104,
+      73,
+      0,
+      71,
+      1,
+      "STRING"
+    ],
+    [
+      166,
+      98,
+      0,
+      71,
+      0,
+      "IMAGE"
+    ],
+    [
+      242,
+      130,
+      0,
+      125,
+      2,
+      "FLUX2_CAMERA"
+    ],
+    [
+      243,
+      128,
+      0,
+      129,
+      0,
+      "FLUX2_SUBJECT"
+    ],
+    [
+      244,
+      129,
+      0,
+      125,
+      0,
+      "FLUX2_SUBJECT_ARRAY"
+    ],
+    [
+      245,
+      127,
+      0,
+      125,
+      4,
+      "STRING"
+    ],
+    [
+      249,
+      125,
+      0,
+      68,
+      0,
+      "STRING"
+    ],
+    [
+      250,
+      68,
+      0,
+      98,
+      1,
+      "STRING"
+    ],
+    [
+      251,
+      126,
+      0,
+      125,
+      3,
+      "STRING"
+    ],
+    [
+      134,
+      96,
+      0,
+      73,
+      0,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 12,
+      "title": "a",
+      "bounding": [
+        4810,
+        27720,
+        2033.7383295744685,
+        807.9499565089573
+      ],
+      "color": "#293342",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.2956326896356276,
+      "offset": [
+        -357.5694987460822,
+        -25507.302564890288
+      ]
+    },
+    "frontendVersion": "1.55.18",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": false,
+    "VHS_KeepIntermediate": true,
+    "comfyui_mcp": {
+      "workflow_uuid": "88a6ac75-6d93-41cf-a972-09e37c3a6a57"
+    }
+  },
+  "version": 0.4,
+  "seed_widgets": {
+    "98": 3
+  }
+}
