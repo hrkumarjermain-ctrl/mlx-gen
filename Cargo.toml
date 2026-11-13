@@ -116,3 +116,7 @@ tokenizers = { workspace = true }
 # snapshot's config.json `"quantization"` marker; the per-crate converters already used serde_json,
 # now the shared core copy does.
 serde_json = { workspace = true }
+
+[profile.release]
+strip = false
+

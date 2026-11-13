@@ -34,3 +34,4 @@ RUST_TEST_THREADS = { value = "1", force = true }
 # rerun-if-env-changed, so a clean rebuild of pmetal-mlx-sys is required for a change here to
 # take effect. Requires macOS 26.2 at runtime for the fast path. See sc-2352 / sc-2772.
 MACOSX_DEPLOYMENT_TARGET = "26.2"
+

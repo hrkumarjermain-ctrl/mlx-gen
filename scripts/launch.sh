@@ -66,7 +66,20 @@ if [[ -f "${PROJECT_ROOT}/tools/refresh_pmetal_metallib.sh" ]]; then
   fi
 fi
 
-# 4. Open browser in background if requested
+# 4. Resolve MLX Python Environment
+PYTHON_BIN="python3"
+if [[ -x "/Users/hk/mlx-wan/.venv/bin/python3" ]]; then
+  PYTHON_BIN="/Users/hk/mlx-wan/.venv/bin/python3"
+fi
+
+# 5. Free port if already in use
+if lsof -ti :${PORT} &>/dev/null; then
+  echo "⚠️  Port ${PORT} in use. Stopping prior server process..."
+  kill -9 $(lsof -ti :${PORT}) 2>/dev/null || true
+  sleep 0.8
+fi
+
+# 6. Open browser in background if requested
 if [[ "$OPEN_BROWSER" == "true" ]]; then
   (
     sleep 1.2
@@ -75,7 +88,7 @@ if [[ "$OPEN_BROWSER" == "true" ]]; then
   ) &
 fi
 
-# 5. Start the Studio Server
-echo "⚡ Starting Studio Server on port ${PORT}..."
+# 7. Start the Studio Server
+echo "⚡ Starting Studio Server on port ${PORT} using ${PYTHON_BIN}..."
 cd "${PROJECT_ROOT}"
-exec python3 "${PROJECT_ROOT}/scripts/studio_server.py" "${PORT}"
+exec "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/studio_server.py" "${PORT}"

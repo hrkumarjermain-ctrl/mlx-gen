@@ -203,54 +203,141 @@ def generate_procedural_image(out_path, width, height, seed, prompt, pack):
     with open(out_path, "wb") as f:
         f.write(png)
 
+class PipelineManager:
+    _krea_pipe = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_krea_pipeline(cls):
+        with cls._lock:
+            if cls._krea_pipe is None:
+                krea_src = Path("/Users/hk/ComfyUI-Shared/_TO_DELETE_2026-10-16/custom_nodes__krea2_alis_mlx")
+                if str(krea_src) not in sys.path:
+                    sys.path.insert(0, str(krea_src))
+
+                from krea2.pipeline import Krea2Pipeline
+                t_path = Path("/Users/hk/ComfyUI-Shared/models/krea2/transformer_mixed_4_8.safetensors")
+                b_dir = Path("/Users/hk/ComfyUI-Shared/models/krea2/base")
+
+                print(f"[Engine] Loading Krea 2 Turbo pipeline (transformer: {t_path.name}, base: {b_dir})...")
+                cls._krea_pipe = Krea2Pipeline(
+                    transformer_path=str(t_path),
+                    precision="mixed-4-8",
+                    base_dir=str(b_dir)
+                )
+                print("[Engine] Krea 2 Turbo pipeline resident in Apple Silicon unified memory.")
+            return cls._krea_pipe
+
 def execute_generation_task(prompt_id, prompt_data):
     """Executes generation steps and broadcasts progress to connected Director UI."""
     extra = prompt_data.get("extra_data", {}).get("extra_pnginfo", {}).get("director", {})
     settings = extra.get("settings", {})
     pack = extra.get("pack", "krea2")
     prompt = settings.get("prompt", "a cinematic photo")
-    steps = max(1, int(settings.get("steps", 10)))
+    steps = max(1, int(settings.get("steps", 8)))
     seed = int(settings.get("seed", 42))
     width = int(settings.get("width", 1024))
     height = int(settings.get("height", 1024))
 
-    print(f"\n[Generation] Starting job {prompt_id} for {pack} ({steps} steps, seed={seed})")
+    # Multiple of 16 requirement
+    width = max(256, (width // 16) * 16)
+    height = max(256, (height // 16) * 16)
+
+    # Resolve references (img2img / edit)
+    init_image = None
+    references = settings.get("references", [])
+    if references and len(references) > 0:
+        ref_obj = references[0]
+        ref_val = ref_obj.get("image") if isinstance(ref_obj, dict) else str(ref_obj)
+        if ref_val:
+            candidate = WORKSPACE_ROOT / ref_val
+            if not candidate.exists():
+                candidate = OUTPUT_DIR / ref_val
+            if candidate.exists():
+                init_image = str(candidate)
+
+    print(f"\n[Generation] Starting job {prompt_id} for {pack} ({steps} steps, {width}x{height}, seed={seed})")
 
     # 1. Start execution
     broker.publish("execution_start", {"prompt_id": prompt_id})
-    time.sleep(0.3)
 
-    # 2. Loading model weights
-    broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
-    time.sleep(0.4)
-
-    # 3. Conditioning & text encoding
-    broker.publish("executing", {"prompt_id": prompt_id, "node": "prep"})
-    time.sleep(0.4)
-
-    # 4. Sampling / denoise loop
-    broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
-    for step in range(1, steps + 1):
-        time.sleep(0.18)
-        broker.publish("progress", {
-            "prompt_id": prompt_id,
-            "node": "sample",
-            "value": step,
-            "max": steps
-        })
-
-    # 5. VAE Decode
-    broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
-    time.sleep(0.3)
-
-    # 6. Save image to disk
     filename = f"mlx_gen_{int(time.time())}_{seed}.png"
     img_path = OUTPUT_DIR / filename
-    generate_procedural_image(img_path, width, height, seed, prompt, pack)
-    print(f"[Generation] Completed {filename}")
 
+    try:
+        if pack == "krea2":
+            # 2. Loading model weights
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
+            pipe = PipelineManager.get_krea_pipeline()
+
+            # Handle LoRAs
+            loras = settings.get("loras", [])
+            lora_specs = []
+            for lora in loras:
+                if lora.get("on", False):
+                    lname = lora.get("name", "")
+                    lstr = float(lora.get("strength", 1.0))
+                    lpath = Path("/Users/hk/ComfyUI-Shared/models/loras") / lname
+                    if lpath.exists():
+                        lora_specs.append((str(lpath), lstr))
+            if lora_specs:
+                pipe.set_loras(lora_specs)
+            else:
+                pipe.set_loras([])
+
+            # 3. Conditioning & text encoding
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "prep"})
+
+            # 4. Sampling / denoise loop with real callback
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
+
+            def on_step(current, total):
+                print(f"[Sampling] Step {current}/{total} complete on Metal GPU")
+                broker.publish("progress", {
+                    "prompt_id": prompt_id,
+                    "node": "sample",
+                    "value": current,
+                    "max": total
+                })
+
+            strength = float(settings.get("strength", 0.6))
+            images = pipe.generate(
+                prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                seed=seed,
+                init_image=init_image,
+                strength=strength,
+                step_callback=on_step
+            )
+
+            # 5. VAE Decode
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
+            images[0].save(str(img_path))
+            print(f"[Generation] Completed {filename} and saved to disk.")
+
+        else:
+            # Fallback procedural preview if an unsupported pack is requested
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
+            time.sleep(0.3)
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
+            for s in range(1, steps + 1):
+                time.sleep(0.2)
+                broker.publish("progress", {"prompt_id": prompt_id, "node": "sample", "value": s, "max": steps})
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
+            generate_procedural_image(img_path, width, height, seed, prompt, pack)
+
+    except Exception as e:
+        print(f"[Generation Error] {e}")
+        import traceback
+        traceback.print_exc()
+        broker.publish("execution_error", {"prompt_id": prompt_id, "node": "sample", "exception_message": str(e)})
+        return
+
+    # 6. Save image to disk & notify Director UI
     broker.publish("executing", {"prompt_id": prompt_id, "node": "save"})
-    time.sleep(0.2)
+    time.sleep(0.1)
 
     # 7. Executed output
     broker.publish("executed", {
@@ -264,8 +351,13 @@ def execute_generation_task(prompt_id, prompt_data):
             }]
         }
     })
-
-    # 8. Success & Done
+    time.sleep(0.1)
+    broker.publish("progress", {
+        "prompt_id": prompt_id,
+        "node": "save",
+        "value": 1,
+        "max": 1
+    })
     broker.publish("execution_success", {"prompt_id": prompt_id})
 
 class SystemTelemetry:
