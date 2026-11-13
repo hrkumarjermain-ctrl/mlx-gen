@@ -47,3 +47,8 @@ target
 
 # Real-weight distill MERGE check fixture (weight-level, regenerable; large bf16 tensors)
 /mlx-gen-sensenova/tests/fixtures/distill_realweight_merge.safetensors
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
