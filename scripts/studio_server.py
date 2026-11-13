@@ -203,58 +203,38 @@ def generate_procedural_image(out_path, width, height, seed, prompt, pack):
     with open(out_path, "wb") as f:
         f.write(png)
 
-class PipelineManager:
-    _krea_pipe = None
-    _lock = threading.Lock()
+# Active job tracking and cancellation
+JOB_LOCK = threading.Lock()
+ACTIVE_JOB = {
+    "prompt_id": None,
+    "cancel_event": None,
+    "thread": None,
+}
 
-    @classmethod
-    def get_krea_pipeline(cls):
-        with cls._lock:
-            if cls._krea_pipe is None:
-                krea_src = Path("/Users/hk/ComfyUI-Shared/_TO_DELETE_2026-10-16/custom_nodes__krea2_alis_mlx")
-                if str(krea_src) not in sys.path:
-                    sys.path.insert(0, str(krea_src))
+def interrupt_active_job():
+    with JOB_LOCK:
+        if ACTIVE_JOB["cancel_event"] is not None:
+            pid = ACTIVE_JOB["prompt_id"]
+            print(f"[Interrupt] Aborting active job {pid}...")
+            ACTIVE_JOB["cancel_event"].set()
+            broker.publish("execution_interrupted", {"prompt_id": pid})
+            return True
+        return False
 
-                from krea2.pipeline import Krea2Pipeline
-                t_path = Path("/Users/hk/ComfyUI-Shared/models/krea2/transformer_mixed_4_8.safetensors")
-                b_dir = Path("/Users/hk/ComfyUI-Shared/models/krea2/base")
-
-                print(f"[Engine] Loading Krea 2 Turbo pipeline (transformer: {t_path.name}, base: {b_dir})...")
-                cls._krea_pipe = Krea2Pipeline(
-                    transformer_path=str(t_path),
-                    precision="mixed-4-8",
-                    base_dir=str(b_dir)
-                )
-                print("[Engine] Krea 2 Turbo pipeline resident in Apple Silicon unified memory.")
-            return cls._krea_pipe
-
-def execute_generation_task(prompt_id, prompt_data):
-    """Executes generation steps and broadcasts progress to connected Director UI."""
+def execute_generation_task(prompt_id, prompt_data, cancel_event):
+    """Executes generation steps with strict cancellation and sequential memory offload."""
     extra = prompt_data.get("extra_data", {}).get("extra_pnginfo", {}).get("director", {})
     settings = extra.get("settings", {})
     pack = extra.get("pack", "krea2")
     prompt = settings.get("prompt", "a cinematic photo")
-    steps = max(1, int(settings.get("steps", 8)))
+    steps = max(1, int(settings.get("steps", 4)))
     seed = int(settings.get("seed", 42))
-    width = int(settings.get("width", 1024))
-    height = int(settings.get("height", 1024))
+    width = int(settings.get("width", 512))
+    height = int(settings.get("height", 512))
 
     # Multiple of 16 requirement
     width = max(256, (width // 16) * 16)
     height = max(256, (height // 16) * 16)
-
-    # Resolve references (img2img / edit)
-    init_image = None
-    references = settings.get("references", [])
-    if references and len(references) > 0:
-        ref_obj = references[0]
-        ref_val = ref_obj.get("image") if isinstance(ref_obj, dict) else str(ref_obj)
-        if ref_val:
-            candidate = WORKSPACE_ROOT / ref_val
-            if not candidate.exists():
-                candidate = OUTPUT_DIR / ref_val
-            if candidate.exists():
-                init_image = str(candidate)
 
     print(f"\n[Generation] Starting job {prompt_id} for {pack} ({steps} steps, {width}x{height}, seed={seed})")
 
@@ -265,12 +245,51 @@ def execute_generation_task(prompt_id, prompt_data):
     img_path = OUTPUT_DIR / filename
 
     try:
-        if pack == "krea2":
-            # 2. Loading model weights
-            broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
-            pipe = PipelineManager.get_krea_pipeline()
+        if cancel_event.is_set():
+            raise InterruptedError("Cancelled before start")
 
-            # Handle LoRAs
+        if pack == "krea2":
+            krea_src = Path("/Users/hk/ComfyUI-Shared/_TO_DELETE_2026-10-16/custom_nodes__krea2_alis_mlx")
+            if str(krea_src) not in sys.path:
+                sys.path.insert(0, str(krea_src))
+
+            import mlx.core as mx
+            from mlx import nn
+            from krea2.text_encoder import Qwen3VLConditioner
+            from krea2.transformer import Krea2Config, SingleStreamDiT
+            from krea2.quant_recipes import mixed_4_8
+            from krea2.pipeline import _load_vae
+            from krea2.sampling import to_pil, patchify, unpatchify, build_positions, timesteps
+
+            base_dir = "/Users/hk/ComfyUI-Shared/models/krea2/base"
+            t_path = "/Users/hk/ComfyUI-Shared/models/krea2/transformer_mixed_4_8.safetensors"
+
+            # ── Phase 1: Sequential Text Encoding ────────────────────────────
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "prep"})
+            print(f"[Engine] Phase 1: Encoding text prompt with Qwen3-VL...")
+            encoder = Qwen3VLConditioner(base_dir, dtype=mx.bfloat16)
+            ctx, mask = encoder([prompt])
+            mx.eval(ctx, mask)
+            
+            # Immediately free text encoder before loading DiT to bound peak memory to < 10GB
+            del encoder
+            import gc
+            gc.collect()
+            mx.clear_cache()
+            print("[Engine] Phase 1 complete: Text encoder released from unified memory.")
+
+            if cancel_event.is_set():
+                raise InterruptedError("Cancelled after text encode")
+
+            # ── Phase 2: DiT Transformer & VAE Loading ──────────────────────
+            broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
+            print(f"[Engine] Phase 2: Loading DiT Transformer ({Path(t_path).name})...")
+            m = SingleStreamDiT(Krea2Config())
+            nn.quantize(m, group_size=64, bits=4, class_predicate=mixed_4_8)
+            m.load_weights(t_path, strict=True)
+            mx.eval(m.parameters())
+
+            # Handle optional LoRAs
             loras = settings.get("loras", [])
             lora_specs = []
             for lora in loras:
@@ -281,59 +300,88 @@ def execute_generation_task(prompt_id, prompt_data):
                     if lpath.exists():
                         lora_specs.append((str(lpath), lstr))
             if lora_specs:
-                pipe.set_loras(lora_specs)
-            else:
-                pipe.set_loras([])
+                from krea2.lora import apply_loras
+                apply_loras(m, lora_specs)
 
-            # 3. Conditioning & text encoding
-            broker.publish("executing", {"prompt_id": prompt_id, "node": "prep"})
+            vae = _load_vae(base_dir)
+            print("[Engine] Phase 2 complete: DiT & VAE ready for sampling.")
 
-            # 4. Sampling / denoise loop with real callback
+            if cancel_event.is_set():
+                del m, vae
+                gc.collect()
+                mx.clear_cache()
+                raise InterruptedError("Cancelled before sampling")
+
+            # ── Phase 3: Denoise Sampling with Live Cancellation ─────────────
             broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
+            patch = m.cfg.patch
+            comp = vae.spatial_scale
+            lat_h, lat_w = height // comp, width // comp
+            mx.random.seed(seed)
+            noise = mx.random.normal((1, vae.latent_channels, lat_h, lat_w)).astype(mx.bfloat16)
+            img = patchify(noise, patch)
+            h_, w_ = lat_h // patch, lat_w // patch
+            pos = build_positions(1, ctx.shape[1], h_, w_)
+            full_mask = mx.concatenate([mask, mx.ones((1, h_ * w_))], axis=1)
+            ts = timesteps(h_ * w_, steps, (256 // (comp * patch))**2, (1280 // (comp * patch))**2)
+            pairs = list(zip(ts[:-1], ts[1:]))
 
-            def on_step(current, total):
-                print(f"[Sampling] Step {current}/{total} complete on Metal GPU")
+            for i, (tc, tp) in enumerate(pairs):
+                if cancel_event.is_set():
+                    raise InterruptedError(f"Cancelled during step {i+1}/{len(pairs)}")
+
+                t = mx.full((1,), tc, dtype=mx.bfloat16)
+                v = m(img, ctx, t, pos, full_mask)
+                img = img + (tp - tc) * v
+                mx.eval(img)
+                print(f"[Sampling] Step {i+1}/{len(pairs)} complete on Apple Silicon GPU")
                 broker.publish("progress", {
                     "prompt_id": prompt_id,
                     "node": "sample",
-                    "value": current,
-                    "max": total
+                    "value": i + 1,
+                    "max": len(pairs)
                 })
 
-            strength = float(settings.get("strength", 0.6))
-            images = pipe.generate(
-                prompt,
-                width=width,
-                height=height,
-                steps=steps,
-                seed=seed,
-                init_image=init_image,
-                strength=strength,
-                step_callback=on_step
-            )
+            # ── Phase 4: VAE Decode ──────────────────────────────────────────
+            if cancel_event.is_set():
+                raise InterruptedError("Cancelled before decode")
 
-            # 5. VAE Decode
             broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
-            images[0].save(str(img_path))
+            latent = unpatchify(img, patch, h_, w_, vae.latent_channels)
+            decoded = vae.decode(latent.astype(mx.float32))
+            decoded = mx.clip(decoded, -1, 1) * 0.5 + 0.5
+            decoded = decoded[:, :, 0]
+            mx.eval(decoded)
+            pil_imgs = to_pil(decoded)
+            pil_imgs[0].save(str(img_path))
             print(f"[Generation] Completed {filename} and saved to disk.")
 
+            # Free memory
+            del m, vae, img, latent, decoded
+            gc.collect()
+            mx.clear_cache()
+
         else:
-            # Fallback procedural preview if an unsupported pack is requested
+            # Fallback for unrecognized pack
             broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
-            time.sleep(0.3)
-            broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
-            for s in range(1, steps + 1):
-                time.sleep(0.2)
-                broker.publish("progress", {"prompt_id": prompt_id, "node": "sample", "value": s, "max": steps})
-            broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
             generate_procedural_image(img_path, width, height, seed, prompt, pack)
 
+    except InterruptedError as ie:
+        print(f"[Generation] Job {prompt_id} cleanly interrupted: {ie}")
+        broker.publish("execution_interrupted", {"prompt_id": prompt_id})
+        return
     except Exception as e:
         print(f"[Generation Error] {e}")
         import traceback
         traceback.print_exc()
         broker.publish("execution_error", {"prompt_id": prompt_id, "node": "sample", "exception_message": str(e)})
         return
+    finally:
+        with JOB_LOCK:
+            if ACTIVE_JOB["prompt_id"] == prompt_id:
+                ACTIVE_JOB["prompt_id"] = None
+                ACTIVE_JOB["cancel_event"] = None
+                ACTIVE_JOB["thread"] = None
 
     # 6. Save image to disk & notify Director UI
     broker.publish("executing", {"prompt_id": prompt_id, "node": "save"})
@@ -687,13 +735,29 @@ class StudioHandler(SimpleHTTPRequestHandler):
 
         elif path == "/prompt":
             prompt_data = json.loads(body)
-            prompt_id = f"job-{int(time.time() * 1000)}"
-            threading.Thread(target=execute_generation_task, args=(prompt_id, prompt_data), daemon=True).start()
+            with JOB_LOCK:
+                if ACTIVE_JOB["thread"] is not None and ACTIVE_JOB["thread"].is_alive():
+                    self.send_json({"error": "A generation is already running. Please cancel or wait."}, status=409)
+                    return
+                prompt_id = f"job-{int(time.time() * 1000)}"
+                cancel_event = threading.Event()
+                t = threading.Thread(target=execute_generation_task, args=(prompt_id, prompt_data, cancel_event), daemon=True)
+                ACTIVE_JOB["prompt_id"] = prompt_id
+                ACTIVE_JOB["cancel_event"] = cancel_event
+                ACTIVE_JOB["thread"] = t
+                t.start()
             self.send_json({"prompt_id": prompt_id, "number": 1})
             return
 
-        elif path in ("/interrupt", "/queue"):
-            self.send_json({"status": "ok"})
+        elif path == "/interrupt":
+            ok = interrupt_active_job()
+            self.send_json({"status": "interrupted" if ok else "idle"})
+            return
+
+        elif path == "/queue":
+            with JOB_LOCK:
+                running = [ACTIVE_JOB["prompt_id"]] if ACTIVE_JOB["prompt_id"] else []
+            self.send_json({"queue_running": running, "queue_pending": []})
             return
 
         self.send_error(404, "Endpoint not found")
