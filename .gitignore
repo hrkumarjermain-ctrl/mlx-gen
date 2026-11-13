@@ -52,3 +52,7 @@ target
 .DS_Store
 **/.DS_Store
 
+# Studio outputs
+outputs/
+
+

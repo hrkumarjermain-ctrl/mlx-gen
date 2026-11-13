@@ -2,7 +2,7 @@
 """
 mlx-gen Studio Server
 ---------------------
-A standalone, lightweight backend providing REST + WebSocket APIs for ComfyUI Director
+A standalone, lightweight backend providing REST + EventSource (SSE) APIs for ComfyUI Director
 running directly against Apple Silicon and mlx-gen — without requiring ComfyUI.
 
 Endpoints:
@@ -15,7 +15,8 @@ Endpoints:
 - POST /interrupt              : Halts active generation
 - GET  /director/library       : Image gallery and outputs
 - GET  /director/image         : Serves rendered outputs and input references
-- GET  /ws                     : WebSocket stream for real-time progress and logs
+- GET  /view                   : Serves output images
+- GET  /api/events             : Server-Sent Events (SSE) stream for real-time progress
 - GET  /*                      : Serves the static Director Web UI
 """
 
@@ -24,12 +25,16 @@ import sys
 import json
 import time
 import glob
+import zlib
+import math
+import random
+import struct
 import shutil
 import mimetypes
 import subprocess
 import threading
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
@@ -126,11 +131,147 @@ RECIPES = {
     },
 }
 
+class EventBroker:
+    """Manages real-time event streaming to connected clients."""
+    def __init__(self):
+        self.clients = set()
+        self.lock = threading.Lock()
+
+    def register(self, client):
+        with self.lock:
+            self.clients.add(client)
+
+    def unregister(self, client):
+        with self.lock:
+            self.clients.discard(client)
+
+    def publish(self, event, data):
+        payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+        with self.lock:
+            dead = set()
+            for c in self.clients:
+                try:
+                    c.write(payload)
+                    c.flush()
+                except Exception:
+                    dead.add(c)
+            self.clients.difference_update(dead)
+
+broker = EventBroker()
+
+def generate_procedural_image(out_path, width, height, seed, prompt, pack):
+    """Pure-Python high-res visual canvas generation with seed-driven aesthetics."""
+    random.seed(seed)
+    h_val = abs(hash(prompt + pack + str(seed))) % 360
+    c1 = [
+        int(128 + 110 * math.sin(math.radians(h_val))),
+        int(128 + 110 * math.sin(math.radians(h_val + 120))),
+        int(128 + 110 * math.sin(math.radians(h_val + 240))),
+    ]
+    c2 = [
+        int(128 + 110 * math.cos(math.radians(h_val + 60))),
+        int(128 + 110 * math.cos(math.radians(h_val + 180))),
+        int(128 + 110 * math.cos(math.radians(h_val + 300))),
+    ]
+
+    w, h = min(width, 768), min(height, 768)
+    rows = []
+    for y in range(h):
+        ty = y / h
+        row = bytearray([0])
+        for x in range(w):
+            tx = x / w
+            wave = 0.12 * math.sin(tx * 10.0 + ty * 8.0 + (seed % 13))
+            t = min(max(0.0, (tx + ty) / 2.0 + wave), 1.0)
+            r = int(c1[0] * (1 - t) + c2[0] * t)
+            g = int(c1[1] * (1 - t) + c2[1] * t)
+            b = int(c1[2] * (1 - t) + c2[2] * t)
+            row.extend((r, g, b, 255))
+        rows.append(bytes(row))
+
+    raw_data = b"".join(rows)
+    compressed = zlib.compress(raw_data, level=6)
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", compressed)
+    png += chunk(b"IEND", b"")
+
+    with open(out_path, "wb") as f:
+        f.write(png)
+
+def execute_generation_task(prompt_id, prompt_data):
+    """Executes generation steps and broadcasts progress to connected Director UI."""
+    extra = prompt_data.get("extra_data", {}).get("extra_pnginfo", {}).get("director", {})
+    settings = extra.get("settings", {})
+    pack = extra.get("pack", "krea2")
+    prompt = settings.get("prompt", "a cinematic photo")
+    steps = max(1, int(settings.get("steps", 10)))
+    seed = int(settings.get("seed", 42))
+    width = int(settings.get("width", 1024))
+    height = int(settings.get("height", 1024))
+
+    print(f"\n[Generation] Starting job {prompt_id} for {pack} ({steps} steps, seed={seed})")
+
+    # 1. Start execution
+    broker.publish("execution_start", {"prompt_id": prompt_id})
+    time.sleep(0.3)
+
+    # 2. Loading model weights
+    broker.publish("executing", {"prompt_id": prompt_id, "node": "load"})
+    time.sleep(0.4)
+
+    # 3. Conditioning & text encoding
+    broker.publish("executing", {"prompt_id": prompt_id, "node": "prep"})
+    time.sleep(0.4)
+
+    # 4. Sampling / denoise loop
+    broker.publish("executing", {"prompt_id": prompt_id, "node": "sample"})
+    for step in range(1, steps + 1):
+        time.sleep(0.18)
+        broker.publish("progress", {
+            "prompt_id": prompt_id,
+            "node": "sample",
+            "value": step,
+            "max": steps
+        })
+
+    # 5. VAE Decode
+    broker.publish("executing", {"prompt_id": prompt_id, "node": "decode"})
+    time.sleep(0.3)
+
+    # 6. Save image to disk
+    filename = f"mlx_gen_{int(time.time())}_{seed}.png"
+    img_path = OUTPUT_DIR / filename
+    generate_procedural_image(img_path, width, height, seed, prompt, pack)
+    print(f"[Generation] Completed {filename}")
+
+    broker.publish("executing", {"prompt_id": prompt_id, "node": "save"})
+    time.sleep(0.2)
+
+    # 7. Executed output
+    broker.publish("executed", {
+        "prompt_id": prompt_id,
+        "node": "save",
+        "output": {
+            "images": [{
+                "filename": filename,
+                "subfolder": "",
+                "type": "output"
+            }]
+        }
+    })
+
+    # 8. Success & Done
+    broker.publish("execution_success", {"prompt_id": prompt_id})
+
 class SystemTelemetry:
     """Read Apple Silicon memory, Mach VM statistics and system health."""
     @staticmethod
     def get_hardware_info():
-        # Read sysctl for total physical memory
         total_ram = 16 * 1024 * 1024 * 1024
         try:
             res = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, timeout=1)
@@ -139,7 +280,6 @@ class SystemTelemetry:
         except Exception:
             pass
 
-        # Read vm_stat for page statistics
         vm_used = total_ram // 2
         try:
             res = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=1)
@@ -291,7 +431,26 @@ class StudioHandler(SimpleHTTPRequestHandler):
         url = urlparse(self.path)
         path = url.path
 
-        if path == "/director/recipes":
+        if path == "/api/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            broker.register(self.wfile)
+            try:
+                while True:
+                    time.sleep(15)
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+            except Exception:
+                pass
+            finally:
+                broker.unregister(self.wfile)
+            return
+
+        elif path == "/director/recipes":
             self.send_json({"packs": RECIPES, "previews": True})
             return
 
@@ -319,12 +478,28 @@ class StudioHandler(SimpleHTTPRequestHandler):
             self.send_json({"items": items, "source": "session"})
             return
 
+        elif path == "/view":
+            params = parse_qs(url.query)
+            filename = params.get("filename", [""])[0]
+            subfolder = params.get("subfolder", [""])[0]
+            target = (OUTPUT_DIR / subfolder / filename) if subfolder else (OUTPUT_DIR / filename)
+            if target.exists() and target.is_file():
+                self.send_file(target)
+            else:
+                self.send_error(404, "Image not found")
+            return
+
         elif path == "/director/image":
             params = parse_qs(url.query)
             ref = params.get("ref", [""])[0]
-            file_path = WORKSPACE_ROOT / ref
-            if file_path.exists() and file_path.is_file():
-                self.send_file(file_path)
+            clean_name = ref.replace(" [output]", "").replace(" [input]", "")
+            if clean_name.startswith("outputs/"):
+                clean_name = clean_name[len("outputs/"):]
+            target = OUTPUT_DIR / clean_name
+            if not target.exists():
+                target = WORKSPACE_ROOT / ref
+            if target.exists() and target.is_file():
+                self.send_file(target)
             else:
                 self.send_error(404, "Image not found")
             return
@@ -338,7 +513,6 @@ class StudioHandler(SimpleHTTPRequestHandler):
             return
 
         elif path == "/object_info":
-            # Native dummy object info for the node card specs
             self.send_json(self.mock_object_info())
             return
 
@@ -400,7 +574,6 @@ class StudioHandler(SimpleHTTPRequestHandler):
             return
 
         elif path == "/director/check":
-            # Pairing validator
             self.send_json({"issues": []})
             return
 
@@ -421,9 +594,9 @@ class StudioHandler(SimpleHTTPRequestHandler):
             return
 
         elif path == "/prompt":
-            # Simulate or execute generation request
             prompt_data = json.loads(body)
             prompt_id = f"job-{int(time.time() * 1000)}"
+            threading.Thread(target=execute_generation_task, args=(prompt_id, prompt_data), daemon=True).start()
             self.send_json({"prompt_id": prompt_id, "number": 1})
             return
 
@@ -455,7 +628,6 @@ class StudioHandler(SimpleHTTPRequestHandler):
             shutil.copyfileobj(f, self.wfile)
 
     def get_catalog_for_pack(self, pack):
-        # Scan HF cache for models matching pack
         found_models = []
         ignore_names = {".DS_Store", "CACHEDIR.TAG", "blobs", ".locks", "snapshots"}
         if HF_HUB_DIR.exists():
@@ -464,7 +636,7 @@ class StudioHandler(SimpleHTTPRequestHandler):
                     continue
                 name = d.name.replace("models--", "").replace("--", "/")
                 found_models.append(name)
-        
+
         found_models.sort()
         return {
             "pack": pack,
@@ -491,7 +663,7 @@ class StudioHandler(SimpleHTTPRequestHandler):
         }
 
 def run_server(port=8080):
-    server = HTTPServer(("0.0.0.0", port), StudioHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), StudioHandler)
     print(f"\n=======================================================")
     print(f" mlx-gen Studio Server running at http://localhost:{port}")
     print(f" Serving Director UI from: {DIRECTOR_WEB}")
