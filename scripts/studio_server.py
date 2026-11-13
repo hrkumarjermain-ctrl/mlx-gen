@@ -36,6 +36,8 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 DIRECTOR_WEB = WORKSPACE_ROOT / "Comfy-Director" / "web"
 OUTPUT_DIR = WORKSPACE_ROOT / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+USERDATA_DIR = Path.home() / ".config" / "mlx-gen" / "userdata"
+USERDATA_DIR.mkdir(parents=True, exist_ok=True)
 HF_HUB_DIR = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
 
 # Native Recipe Configuration for Supported Models
@@ -345,6 +347,35 @@ class StudioHandler(SimpleHTTPRequestHandler):
             self.send_json({cls_name: self.mock_object_info().get(cls_name, {})})
             return
 
+        elif path.startswith("/userdata/"):
+            rel = path[len("/userdata/"):].lstrip("/")
+            target = USERDATA_DIR / rel
+            if target.exists() and target.is_file():
+                try:
+                    with open(target, "r") as f:
+                        self.send_json(json.load(f))
+                except Exception:
+                    self.send_error(500, "Error reading userdata")
+            else:
+                self.send_error(404, "Userdata not found")
+            return
+
+        elif path == "/director/folders":
+            self.send_json({"folders": []})
+            return
+
+        elif path == "/director/scan/status":
+            self.send_json({"running": False, "found": 0, "scanned": 0, "files": [], "groups": {}, "duplicates": [], "wasted": 0})
+            return
+
+        elif path == "/director/scan/results":
+            self.send_json({"files": []})
+            return
+
+        elif path == "/director/stt":
+            self.send_json({"installed": False, "ready": False})
+            return
+
         elif path == "/api/workflows/samples":
             samples = []
             for wf in (WORKSPACE_ROOT / "Workflows").glob("*.json"):
@@ -371,6 +402,22 @@ class StudioHandler(SimpleHTTPRequestHandler):
         elif path == "/director/check":
             # Pairing validator
             self.send_json({"issues": []})
+            return
+
+        elif path.startswith("/userdata/"):
+            rel = path[len("/userdata/"):].lstrip("/")
+            target = USERDATA_DIR / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(target, "w") as f:
+                    f.write(body)
+                self.send_json({"status": "ok"})
+            except Exception as e:
+                self.send_error(500, f"Error writing userdata: {e}")
+            return
+
+        elif path in ("/director/folders", "/director/scan/start", "/director/scan/cancel", "/free", "/director/register_path"):
+            self.send_json({"status": "ok"})
             return
 
         elif path == "/prompt":
@@ -410,11 +457,15 @@ class StudioHandler(SimpleHTTPRequestHandler):
     def get_catalog_for_pack(self, pack):
         # Scan HF cache for models matching pack
         found_models = []
+        ignore_names = {".DS_Store", "CACHEDIR.TAG", "blobs", ".locks", "snapshots"}
         if HF_HUB_DIR.exists():
             for d in HF_HUB_DIR.glob("*"):
+                if d.name in ignore_names or d.name.startswith("."):
+                    continue
                 name = d.name.replace("models--", "").replace("--", "/")
                 found_models.append(name)
         
+        found_models.sort()
         return {
             "pack": pack,
             "models": found_models,
